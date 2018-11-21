@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html><head id="Barebones">
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <script src="GPGPUtility.js"></script>
+        <script src="WaveEqn.js"></script>
+        <script src="WavePlot.js"></script>
+        <title>WebGL wave example</title>
+        </head>
+        <body>
+        <button id="startbutton">Restart</button> <p>
+        <div class="content">
+            <h1>Snell's law: a refracting wave packet. Click "Restart" for animation</h1>
+
+
+            <figure class="center" id="results">
+                <figcaption>
+                    You should see a waveform traveling here. 
+                </figcaption>
+            </figure>
+        </div>
+
+        <br class="clear" />
+        <script>
+        startbutton.addEventListener('click', function (ev) {
+            location.reload();
+            ev.preventDefault();
+        }, false);
+        </script>
+        
+        <script>
+            "use strict";
+
+            /** The canvas onto which we render the wave function & potential */
+            var canvas;
+            var dt;
+            var gl;
+            var gpgpUtility;
+            var nframes;
+            var nsteps;
+            var parent;
+            var renderer;
+            var vel_top;
+            var vel_bot;
+            var wp;
+            var wt;
+            var wlen;
+            var wang;
+            var waveengine;
+            var waveFunctionData, waveFunctionDataD, waveFunctionTexture0, waveFunctionTexture1, waveFunctionTexture2;
+            var x0;
+            var y0;
+            var xLength;
+            var xResolution;
+            var yLength;
+            var yResolution;
+
+
+            // Physical parameters for the wave motion simulation
+            
+            xLength = 4000.0; // in meters
+            yLength = 4000.0; // in meters
+            vel_top = 1000.0; // velocity in m/s, in top half
+            vel_bot = 500.0; // velocity in m/s, in bottom half
+            x0 = .25*xLength; // location of initial Gaussian
+            y0 = .75*yLength;
+            wp = 0.05*xLength; // width of the initial Gaussian wave, propagating direction
+            wt = 0.05*xLength; // width of the initial Gaussian wave, transverse direction
+            wlen = .05*xLength; // wavelength of the propagating wave
+            wang = -45; // propagation angle in degrees (0 is horizontal, to the right)
+
+            // Parameters for the numerical simulation
+            
+            xResolution = 1000; // number of sample points (x-dir y-dir)
+            yResolution = 1000; 
+            dt = .001; // sample interval for time, in seconds
+            nframes = 600; // Total number of frames to compute and display
+            nsteps = 5; // Number of delta t timesteps per frams
+
+            // Setup the GPU and canvas to diplay results
+            
+            gpgpUtility = new vizit.utility.GPGPUtility(xResolution, yResolution, {premultipliedAlpha: false});
+            gpgpUtility.setProblemSize(xResolution, yResolution);
+
+            canvas = gpgpUtility.getCanvas();
+            canvas.style.height = yResolution + "px";
+            parent = document.getElementById("results")
+            parent.insertBefore(canvas, parent.firstChild);
+            
+            // an initial plane wave, constrained
+            function f_plane(x,w,lambda) {
+                return Math.exp(-(x*x)/(w*w))*Math.cos(2*Math.PI*x/lambda);
+            }
+            // the corresponding derivative
+            function f_planeD(x,w,lambda) {
+                return -Math.exp(-(x*x)/(w*w))*((2*x/(w*w))*Math.cos(2*Math.PI*x/lambda)+
+                                                (2*Math.PI/lambda)*Math.sin(2*Math.PI*x/lambda));
+            }
+            // a window in the transverse direction
+            function f_win(y,w) {
+                return Math.exp(-(y*y)/(w*w));
+            }
+ 
+            // the initial waveform
+            function gaussWaveform(waveform,xRez,yRez,xLen,yLen) {
+                var aa = Math.cos(Math.PI*wang/180); // rotation matrix
+                var bb = Math.sin(Math.PI*wang/180);
+                for (var j = 0; j < yRez; ++j) {
+                    for (var i = 0; i < xRez; ++i) {
+                        var x = xLen*(i/xRez) - x0;
+                        var y = yLen*(j/yRez) - y0;
+                        waveform[4*(i + j*xRez)] = 
+                             10*f_plane(aa*x + bb*y,wp,wlen)*f_win(-bb*x+aa*y,wt);
+                      }
+                }
+                return waveform;
+            }
+            function gaussWaveformD(waveform,xRez,yRez,xLen,yLen) {
+                var aa = Math.cos(Math.PI*wang/180); // rotation matrix
+                var bb = Math.sin(Math.PI*wang/180);
+                for (var j = 0; j < yRez; ++j) {
+                    for (var i = 0; i < xRez; ++i) {
+                        var x = xLen*(i/xRez) - x0;
+                        var y = yLen*(j/yRez) - y0;
+                        waveform[4*(i + j*xRez)] = 
+                             10*f_plane(aa*x + bb*y,wp,wlen)*f_win(-bb*x+aa*y,wt)
+                                - 1.02*10*dt*vel_top*f_planeD(aa*x + bb*y,wp,wlen)*f_win(-bb*x+aa*y,wt);
+                      }
+                }
+                return waveform;
+            }
+            // we stuff velocity^2 info into the green channel;
+            function velField(waveform,xRez,yRez) {
+                for (var j = 0; j < yRez; ++j) {
+                    for (var i = 0; i < xRez; ++i) {
+                        waveform[4*(i + j*xRez) + 1] = 
+                            (j > yRez/2) ? vel_top**2 : vel_bot**2;
+                    }
+                }
+                return waveform;
+            }
+
+            /**
+             * Run the simulation for n time steps, then show the results.
+             */
+            function nextFrame() {
+                for (var i = 0; i < nsteps; ++i) {
+                    waveengine.timestep();
+                }
+
+                renderer.show(waveengine.getRenderedTexture());
+
+                if (nframes--) {
+                    requestAnimationFrame(nextFrame);
+                }
+            }
+
+            waveFunctionData = new Float32Array(4 * xResolution * yResolution);
+            waveFunctionData = velField(waveFunctionData,xResolution,yResolution);
+            waveFunctionData = gaussWaveform(waveFunctionData,xResolution,yResolution,xLength,yLength);
+ 
+            waveFunctionDataD = new Float32Array(4 * xResolution * yResolution);
+            waveFunctionDataD = velField(waveFunctionDataD,xResolution,yResolution);
+            waveFunctionDataD = gaussWaveformD(waveFunctionDataD,xResolution,yResolution,xLength,yLength);
+ 
+            waveFunctionTexture0 = gpgpUtility.makeTexture(WebGLRenderingContext.FLOAT, waveFunctionData);
+            waveFunctionTexture1 = gpgpUtility.makeTexture(WebGLRenderingContext.FLOAT, waveFunctionDataD);
+            waveFunctionTexture2 = gpgpUtility.makeTexture(WebGLRenderingContext.FLOAT, waveFunctionData);
+
+
+            waveengine = new WaveEngine(gpgpUtility, xResolution, yResolution, xLength, yLength, dt);
+            renderer = new WaveResults(gpgpUtility, parent, xResolution, yResolution);
+
+            waveengine.setInitialTextures(waveFunctionTexture0, waveFunctionTexture1, waveFunctionTexture2);
+
+            renderer.show(waveengine.getRenderedTexture());
+
+            requestAnimationFrame(nextFrame);
+    </script>
+</html>
